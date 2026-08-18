@@ -23,9 +23,14 @@ $env:Path += ";C:\Program Files\PostgreSQL\18\bin\"
 $psqlPath = "C:\Program Files\PostgreSQL\18\bin"
 $slotResult = 0
 
+Write-Host "Existing Primary is $Primary"
 if($OldPrimary -eq $new_primary){
-    Write-Host "$($NewPrimary) is already is the primary, Please pick another node, nothing can be done here"
+    Write-Host "                $($NewPrimary) is already is the primary, Please pick another node, nothing can be done here"
     Break
+}
+if($new_primary -notin $Replicas){
+    Write-host "Variable #new_primary Input needs to be part of replica list: $($Replicas -join ', ')"
+    break
 }
 
 $slotResult = (psql.exe -h $Primary -U $DB_USER -d $DB_NAME -t -c "SELECT bool_or(active)::int AS result FROM pg_replication_slots").trim()
@@ -84,6 +89,9 @@ Write-Host "Restore POINT on Primary : $($restore_point)"
 # STEP 3 - Promote standby
 ########################################################
 
+#modifying Replica list as one of them is becoming primary
+#$Replicas_bkp=$Replicas
+#$Replicas | Where-Object { $_ -ne $new_primary }
 foreach($item in $Replicas){
 do {
     write-Host "waiting for Restore point to be ready on $($item)"
@@ -98,8 +106,8 @@ do {
                    $catchup_point.Trim()                
                     }
                     $i++ 
-    Write-Host "Restore POINT on new PRimary is caught up to : $($restore_point)"
 } until ($lsn_newPrim -eq "t")
+Write-Host "Restore POINT on Replica $($item) is caught up to : $($restore_point)"
 }
 
 Write-Host "Promoting $NewPrimary"
@@ -185,11 +193,11 @@ foreach($Replica in $Replicas)
     {
         $slot_name_ip=$Replica.Split('.')[3]
         $Slot = "standby_slot_$slot_name_ip"
-        Write-Host "checking slots $Slot"
+        Write-Host "Since Slot Option is choosen we are checking for slots $Slot"
 
         Invoke-Command `
           -ComputerName $Replica `
-          -ArgumentList $NewPrimary,$Slot `
+          -ArgumentList $NewPrimary,$Slot, `
           -ScriptBlock {
 
             param($NewPrimary,$Slot)
@@ -212,12 +220,18 @@ foreach($Replica in $Replicas)
             Add-Content $AutoConf `
             "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($using:NewPrimary) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
 
-            Start-sleep 1
+            $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+            #(Get-Content $postgresConf) |  ForEach-Object { $_ -replace "^primary_slot_name.*$","#primary_slot_name ='$Slot'" } | Set-Content $postgresConf
+            (Get-Content $postgresConf) |  ForEach-Object { $_ -replace '^(#)primary_slot_name.*$',"primary_slot_name ='$Slot'" } | Set-Content $postgresConf
+
+            Start-sleep 5
             Restart-Service postgresql-x64-18
             Start-sleep 1
             } 
         
         } else {
+
+                Write-Host "Since Slot Option is Not choosen we are remove any existing  slots"
                 Invoke-Command `
               -ComputerName $Replica `
               -ArgumentList $NewPrimary `
@@ -239,11 +253,17 @@ foreach($Replica in $Replicas)
 
                 Add-Content $AutoConf `
                 "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($using:NewPrimary) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
+                
+                $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+                (Get-Content $postgresConf) |  ForEach-Object { $_ -replace '^primary_slot_name.*$', "#primary_slot_name" } | Set-Content $postgresConf
 
-                Start-sleep 3
+
+                Write-Host "removing entry from postgres.conf"
+                Start-sleep 5
                 Restart-Service postgresql-x64-18
                 Start-sleep 2
             }
+        Write-Host "Reconfiguring the replicas is done"
       }
 }
 
@@ -253,10 +273,10 @@ foreach($Replica in $Replicas)
 
 Invoke-Command `
  -ComputerName $OldPrimary `
- -ArgumentList $NewPrimary,$OldPrimary `
+ -ArgumentList $NewPrimary,$OldPrimary,$slotResult `
  -ScriptBlock {
 
-    param($NewPrimary,$OldPrimary)
+    param($NewPrimary,$OldPrimary,$slotResult)
     
     Stop-Service postgresql-x64-18
     $env:Path += ";C:\Program Files\PostgreSQL\18\bin\"
@@ -299,6 +319,11 @@ Invoke-Command `
               Add-Content `
               $AutoConf `
               "primary_slot_name='$Slot'"
+
+            $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+            #(Get-Content $postgresConf) |  ForEach-Object { $_ -replace "^primary_slot_name.*$","#primary_slot_name ='$Slot'" } | Set-Content $postgresConf
+            (Get-Content $postgresConf) |  ForEach-Object { $_ -replace '^(#)primary_slot_name.*$',"primary_slot_name ='$Slot'" } | Set-Content $postgresConf
+
         }
         else
         {
@@ -312,7 +337,11 @@ Invoke-Command `
             Add-Content `
                 $AutoConf `
                 "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($using:NewPrimary) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
-    }
+         
+            $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+            (Get-Content $postgresConf) | ForEach-Object { $_ -replace '^primary_slot_name.*$', "#primary_slot_name =''" } | Set-Content $postgresConf
+
+         }
     
     Start-sleep 1
     Start-Service postgresql-x64-18
@@ -366,106 +395,101 @@ foreach($item in $Replicas)
 # STEP 8 - Fixing Startup to Streaming 
 ########################################################
 
-
-    Write-Host "if any server hold up in startup mode"
     $replica_state=(psql `
    -h $NewPrimary `
    -U postgres `
    -t -A `
    -c "SELECT client_addr FROM pg_stat_replication where state='startup';")
 
-
-    Write-Host "list of servers in Startup Mode : $($replica_state)"
-    Write-Host $replica_state.count
+    if($replica_state){
+    Write-Host "Check if any server hold up in startup mode"
+    Write-Host "List of servers with State in 'Startup' Mode - that needs a rewind or rebuild : $($replica_state -join ', ')"
+    }
     foreach($j in $replica_state)
     {
-        
-        Write-Host "Inside the invoke to rewind"
-       <# Invoke-Command `
-         -ComputerName $j `
-         -ArgumentList $slotResult,$servers `
-         -ScriptBlock {
-            param($slotResult,$servers)
-            $using:slotResult | C:\DBA\Scripts\FailOver\pg_rewind_script_noSlot.ps1#>
+            Write-Host "fixing the Replica's Startup State for $($j)"
             $Primary=$new_primary
-            Write-Host "Current Primary: $Primary"
-            $SourceConn = "host=$($Primary) port=5432 user=postgres dbname=postgres"
-            Write-Host "Stopping PostgreSQL..."
-            net stop postgresql-x64-18
+            Invoke-Command `
+              -ComputerName $j `
+              -ArgumentList $Primary,$slotResult,$DataDir,$j `
+              -ScriptBlock {
 
-            Write-Host "Running pg_rewind..."
+                param($Primary,$slotResult,$DataDir,$j)
 
-            pg_rewind `
-              --target-pgdata=$DataDir `
-              --source-server="$SourceConn" `
-              --progress
+                Write-Host "Current Primary: $Primary"
+                $SourceConn = "host=$($Primary) port=5432 user=postgres dbname=postgres"
+                Write-Host "Stopping PostgreSQL..."
+                Start-Sleep -Seconds 2
+                Stop-Service postgresql-x64-18
+                $env:Path += ";C:\Program Files\PostgreSQL\18\bin\"
 
-            if ($LASTEXITCODE -ne 0)
-            {
-                Write-Error "pg_rewind failed"
-                exit 1
-            }
+                Write-Host "Running pg_rewind..."
 
-            Write-Host "Configuring standby..."
-            New-Item `
-               -Path "$DataDir\standby.signal" `
-               -ItemType File `
-               -Force
+                pg_rewind `
+                  --target-pgdata=$DataDir `
+                  --source-server="$SourceConn" `
+                  --progress
 
-            $AutoConf =
-                    "S:\Postgres\18.3\data\postgresql.auto.conf"
-
-            if($slotResult -eq 1){
-                $slot_name_ip=$j.Split('.')[3]
-                $Slot = "standby_slot_$slot_name_ip"
-                Write-Host "Slot Name : $($Slot)"
-                $Content =
-                    Get-Content $AutoConf |
-                    Where-Object {
-                            $_ -notmatch "^primary_conninfo" -and
-                            $_ -notmatch "^primary_slot_name"
-                    }
-
-                $Content | Set-Content $AutoConf
-                Add-Content `
-                      $AutoConf `
-                      "primary_slot_name='$Slot'"
-
-                Add-Content `
-                    $AutoConf `
-                    "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($Primary) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
-
-            } else {
-                $Content =
-                    Get-Content $AutoConf |
-                    Where-Object {
-                        $_ -notmatch "^primary_conninfo" -and
-                        $_ -notmatch "^primary_slot_name"
-                    }
-
-                $Content | Set-Content $AutoConf
-                Add-Content $AutoConf `
-                "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($Primary) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
-             `
-            }
-                $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
-                $Content =
-                Get-Content $postgresConf |
-                Where-Object {
-                    $_ -notmatch "^primary_slot_name"
-                    }
-
-                if($slotResult -eq 1){
-                    Add-Content $postgresConf `
-                    "primary_slot_name= '$Slot'"
-
-                }else {
-                    $Content | Set-Content $postgresConf
-                    Write-Host "removing entry from postgres.conf"
+                if ($LASTEXITCODE -ne 0)
+                {
+                    Write-Error "pg_rewind failed"
+                    exit 1
                 }
 
+                Write-Host "Configuring standby..."
+                New-Item `
+                   -Path "$DataDir\standby.signal" `
+                   -ItemType File `
+                   -Force
+
+                $AutoConf =
+                        "S:\Postgres\18.3\data\postgresql.auto.conf"
+
+                if($slotResult -eq 1){
+                    $slot_name_ip=$j.Split('.')[3]
+                    $Slot = "standby_slot_$slot_name_ip"
+                    Write-Host "Slot Name : $($Slot)"
+                    $Content =
+                        Get-Content $AutoConf |
+                        Where-Object {
+                                $_ -notmatch "^primary_conninfo" -and
+                                $_ -notmatch "^primary_slot_name"
+                        }
+
+                    $Content | Set-Content $AutoConf
+                    Add-Content `
+                          $AutoConf `
+                          "primary_slot_name ='$Slot'"
+
+                    Add-Content `
+                        $AutoConf `
+                        "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($Primary) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
+
+                    $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+                    (Get-Content $postgresConf) | ForEach-Object { $_ -replace '^(#)primary_slot_name.*$',"primary_slot_name = '$Slot'" } | Set-Content $postgresConf
+
+                } else {
+                    $Content =
+                        Get-Content $AutoConf |
+                        Where-Object {
+                            $_ -notmatch "^primary_conninfo" -and
+                            $_ -notmatch "^primary_slot_name"
+                        }
+
+                    $Content | Set-Content $AutoConf
+                    Add-Content $AutoConf `
+                    "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($Primary) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
+                 
+                    $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+                    (Get-Content $postgresConf) | ForEach-Object { $_ -replace '^(#)primary_slot_name.*$', "#primary_slot_name =''" } | Set-Content $postgresConf
+
+                    Write-Host "removing primary slot entry from postgres.conf"
+                  
+                }
+                }
+            Start-Sleep -Seconds 3
             Write-Host "Starting PostgreSQL..."
-            net start postgresql-x64-18
+            Start-Service postgresql-x64-18
             Get-Service -Name "postgresql-x64-18" | Set-Service -StartupType Automatic -PassThru
 
             #psql -h $Server -p $Port -U $User -d $Database -c $Slot_create_119
@@ -486,4 +510,13 @@ foreach($item in $Replicas)
             }
 
     Start-Sleep 1
+
+    if($slotResult)
+    {
+         Write-Host "Printing slots info - status"
+        psql `
+                -h $NewPrimary `
+                -U postgres `
+                -c "SELECT slot_name, plugin, slot_type, active, wal_status FROM pg_replication_slots"
+    }
     Write-Host "Switchover completed. AND Slots: $($slot_flag)"

@@ -126,6 +126,14 @@ if($slotResult -eq 1){
     Add-Content "S:\Postgres\18.3\data\postgresql.auto.conf" `
     "primary_slot_name = '$Slot'"
 
+    
+    #$postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+    #(Get-Content $postgresConf) |  ForEach-Object { $_ -replace "^primary_slot_name.*$","#primary_slot_name ='$Slot'" } | Set-Content $postgresConf
+    #(Get-Content $postgresConf) |  ForEach-Object { $_ -replace '^#primary_slot_name.*$',"primary_slot_name ='$Slot'" } | Set-Content $postgresConf
+    $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+    (Get-Content $postgresConf) -replace '^\s*.*primary_slot_name\s*=\s*.*$', "primary_slot_name = '$Slot'" | Set-Content $postgresConf
+
+
 } else {
     $Content =
     Get-Content $AutoConf |
@@ -138,28 +146,21 @@ if($slotResult -eq 1){
     Add-Content $AutoConf `
     "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($PrimaryHost) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
 
-    }
+      
+                          
+    #$postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+    #(Get-Content $postgresConf) |  ForEach-Object { $_ -replace '^primary_slot_name.*$', "#primary_slot_name =''" } | Set-Content $postgresConf
+    $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+    #(Get-Content $postgresConf) | ForEach-Object { $_ -replace '^(#)primary_slot_name.*$', "#primary_slot_name =''" } | Set-Content $postgresConf
+    (Get-Content $postgresConf) -replace '^(\s*)(primary_slot_name\s*=\s*.*)$', '#$2' | Set-Content $postgresConf
+    Write-Host "removing primary slot entry from postgres.conf"
+   }
 
-    $Content =
-    Get-Content $postgresConf |
-    Where-Object {
-        $_ -notmatch "^primary_slot_name"
-        }
-
-    if($slotResult -eq 1){
-        Add-Content $postgresConf `
-        "primary_slot_name= '$Slot'"
-
-    }else {
-        Add-Content $postgresConf `
-        "#primary_slot_name= '$Slot'"
-    }
+Start-Sleep -Seconds 3
 Write-Host "Starting PostgreSQL service..."
 Start-Service -Name $PgService
 
 Write-Host "Waiting for startup..."
-Start-Sleep -Seconds 5
-
 Write-Host "Checking replica status..."
 
 & "$PgBin\psql.exe" `

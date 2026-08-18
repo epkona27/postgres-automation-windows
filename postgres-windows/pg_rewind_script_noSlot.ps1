@@ -18,10 +18,8 @@ $Primary,$Replicas = Get-PgPrimaryReplicas -Nodes $servers
 Write-Host "Current Primary: $Primary"
 $SourceConn = "host=$($Primary) port=5432 user=postgres dbname=postgres"
 
+
 $slotResult = (psql.exe -h $Primary -U $DB_USER -d $DB_NAME -t -c "SELECT bool_or(active)::int AS result FROM pg_replication_slots").trim()
-if($slotResult -eq ""){
-    $slotResult = 0
-}
 Write-Host "result of Slot_check : $($slotResult)"
 $slotResult = Read-Host -Prompt "please enter if you want to have Replicatoin Slot 1 for Yes , 0 for No"
 
@@ -68,31 +66,28 @@ if($slotResult -eq 1){
     $Slot_create_92    = "SELECT pg_create_physical_replication_slot('standby_slot_92');"
     $Slot_create_118    = "SELECT pg_create_physical_replication_slot('standby_slot_118');"
 
-    if($NewPrimary -eq "10.0.126.118")
+    if($Primary -eq "10.0.126.118")
     {
         psql.exe `
-          -h $NewPrimary `
+          -h $Primary `
           -U postgres `
           -t `
-          -c "$Slot_create_119;$Slot_create_92;"
-          #-c "call slot_creation_118();"
-    }elseif ($NewPrimary -eq "10.0.126.119"){
+          -c "call slot_creation_118();"
+    }elseif ($Primary -eq "10.0.126.119"){
          psql.exe `
-          -h $NewPrimary `
+          -h $Primary `
           -U postgres `
           -t `
-          -c "$Slot_create_118;$Slot_create_92;"
-          #-c "call slot_creation_119();"
+          -c "call slot_creation_119();"
     }else{
         psql.exe `
-          -h $NewPrimary `
+          -h $Primary `
           -U postgres `
           -t `
-          -c "$Slot_create_119;$Slot_create_118;"
-#          -c "call slot_creation_92();"        
+          -c "call slot_creation_92();"        
     }
 
-Write-Host "Slot creation done"
+Write-Host "Slot creation done with stored procedure"
 }
 
 $AutoConf =
@@ -118,8 +113,9 @@ if($slotResult -eq 1){
         $AutoConf `
         "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($Primary) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
 
-    #(Get-Content -Path "$DataDir\postgresql.auto.conf") -notmatch "primary_conninfo" | Set-Content "$DataDir\postgresql.auto.conf"
-      #      Add-Content -Path "$DataDir\postgresql.auto.conf" -Value "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($Primary) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
+    
+        $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
+        (Get-Content $postgresConf) -replace '^\s*.*primary_slot_name\s*=\s*.*$', "primary_slot_name = '$Slot'" | Set-Content $postgresConf
 
 } else {
     $Content =
@@ -133,22 +129,13 @@ if($slotResult -eq 1){
     Add-Content $AutoConf `
     "primary_conninfo = 'user=replicator passfile=''C:\\\\Users\\\\ADM90995\\\\AppData\\\\Roaming/postgresql/pgpass.conf'' channel_binding=prefer host=$($Primary) port=5432 sslmode=prefer sslnegotiation=postgres sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=disable krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'"
  `
-}
     $postgresConf = "S:\Postgres\18.3\data\postgresql.conf"
-    $Content =
-    Get-Content $postgresConf |
-    Where-Object {
-        $_ -notmatch "^primary_slot_name"
-        }
+    #(Get-Content $postgresConf) | ForEach-Object { $_ -replace '^(#)primary_slot_name.*$', "#primary_slot_name =''" } | Set-Content $postgresConf
+    (Get-Content $postgresConf) -replace '^(\s*)(primary_slot_name\s*=\s*.*)$', '#$2' | Set-Content $postgresConf
+    Write-Host "removing primary slot entry from postgres.conf"
+                  
+}
 
-    if($slotResult -eq 1){
-        Add-Content $postgresConf `
-        "primary_slot_name= '$Slot'"
-
-    }else {
-        $Content | Set-Content $postgresConf
-        Write-Host "removing entry from postgres.conf"
-    }
 
 Write-Host "Starting PostgreSQL..."
 net start postgresql-x64-18

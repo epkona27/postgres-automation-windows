@@ -2,7 +2,9 @@
 # PostgreSQL Replication Lag
 ########################################################
 
- $servers = @("10.0.126.118", "10.0.126.119", "10.0.126.92")
+ #$servers = @("10.0.126.118", "10.0.126.119", "10.0.126.92")
+ $data = Get-Content -Raw -Path ".\server_ips.json" | ConvertFrom-Json
+ $servers = $data.development.server_ips
 . .\check_split_brain.ps1
 
 $Primary,$Replicas = Get-PgPrimaryReplicas -Nodes $servers
